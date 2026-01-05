@@ -202,43 +202,6 @@ export class ScheduleLayoutService {
     };
   }    
 
-  private snapDuration(endMin: number, startMin: number): number {
-    const dur = endMin - startMin;
-  
-    // Typical lecture lengths (Berkeley often 60 or 90)
-    const options = [60, 90, 120];
-  
-    // If OCR underestimates and lands near 60 but could be 90, bias up.
-    // Tune threshold: if dur is between 60 and 80, pick 90.
-    if (dur >= 60 && dur <= 80) return startMin + 90;
-  
-    // Otherwise choose nearest
-    const best = options.reduce((best, d) =>
-      Math.abs(d - dur) < Math.abs(best - dur) ? d : best
-    , options[0]);
-  
-    return startMin + best;
-  }
-  
-  
-
-  private snapToHalfHourNo15or45(mins: number, mode: "start" | "end"): number {
-    const m = ((mins % 60) + 60) % 60; // 0..59
-    if (m === 0 || m === 30) return mins;
-  
-    if (mode === "start") {
-      // FLOOR to :00 or :30
-      return m < 30 ? (mins - m) : (mins - (m - 30));
-    }
-  
-    // END: CEIL to :30 or next :00
-    return m < 30 ? (mins + (30 - m)) : (mins + (60 - m));
-  }  
-  
-  private enforceMinDuration(startMin: number, endMin: number, minDuration: number): number {
-    if (endMin - startMin >= minDuration) return endMin;
-    return startMin + minDuration;
-  }
   
 
   private computeSlotHeight(timeLabels: TimeLabel[]): number {
@@ -426,27 +389,33 @@ export class ScheduleLayoutService {
     if (lines.length === 0) return null;
   
     // Title detection
-    let titleParts: string[] = [];
+    // Take lines until we find something that looks like a location (building + number)
+    // or we've taken the first 3 lines (most courses have 1-2 title lines)
+    const locationPattern = /^[A-Za-z]+\s+\d+$/; // "Soda 306"
     let titleEndIndex = 0;
+    const maxTitleLines = 3;
   
-    const coursePattern = /(science|math|engineering|computer|chemistry|physics|biology|mathematics)/i;
-    const numberPattern = /^\d+$/;
-  
-    for (let i = 0; i < lines.length; i++) {
+    for (let i = 0; i < Math.min(lines.length, maxTitleLines); i++) {
       const line = lines[i];
-      if (coursePattern.test(line) || numberPattern.test(line) || line.includes('-')) {
-        titleParts.push(line);
-        titleEndIndex = i + 1;
-      } else {
+      // Stop if we hit something that looks like a location
+      if (locationPattern.test(line)) {
         break;
       }
+      // Stop if we hit something that's just a number (likely a room number on its own)
+      if (i > 0 && /^\d{3,}$/.test(line)) {
+        break;
+      }
+      titleEndIndex = i + 1;
     }
   
+    // Get title from lines up to titleEndIndex
+    const titleParts = lines.slice(0, titleEndIndex);
     let title =
       titleParts.length > 0
         ? titleParts.join(' ')
             .replace(/\s+-\s+|\s+-|-\s+/g, '-')
             .replace(/\s+/g, ' ')
+            .trim()
         : lines[0] || 'Untitled';
   
     title = title.replace(/\s+/g, ' ').trim();
@@ -455,8 +424,6 @@ export class ScheduleLayoutService {
     // Location
     let location = '';
     let instructorStartIndex = titleEndIndex;
-  
-    const locationPattern = /^[A-Za-z]+\s+\d+$/; // "Soda 306"
     for (let i = titleEndIndex; i < lines.length; i++) {
       if (locationPattern.test(lines[i])) {
         location = lines[i];
