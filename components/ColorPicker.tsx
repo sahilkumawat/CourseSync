@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 
 interface ColorPickerProps {
   value: string;
@@ -18,67 +18,79 @@ export default function ColorPicker({ value, onChange, colors }: ColorPickerProp
         setIsOpen(false);
       }
     }
-
     if (isOpen) {
       document.addEventListener('mousedown', handleClickOutside);
       return () => document.removeEventListener('mousedown', handleClickOutside);
     }
   }, [isOpen]);
 
-  const selectedColor = colors.find(c => c.value === value) || colors[0];
+  const selectedColor = useMemo(
+    () => colors.find((c) => c.value === value) ?? colors[0],
+    [colors, value]
+  );
 
   return (
-    <div className="relative" ref={pickerRef}>
+    <div className="relative inline-block" ref={pickerRef}>
+      {/* Trigger (Google-ish pill) */}
       <button
         type="button"
-        onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center space-x-2 px-3 py-1.5 border border-gray-300 rounded-md hover:bg-gray-50 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+        onClick={() => setIsOpen((v) => !v)}
+        className="inline-flex items-center gap-2 rounded-full border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-800 shadow-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500"
+        aria-haspopup="menu"
+        aria-expanded={isOpen}
       >
-        <div
-          className="w-5 h-5 rounded-full border border-gray-300"
+        <span
+          className="h-5 w-5 rounded-full border border-gray-300"
           style={{ backgroundColor: selectedColor.color }}
         />
-        <span className="text-sm text-gray-700">{selectedColor.label}</span>
+        <span className="max-w-[120px] truncate">{selectedColor.label}</span>
+        <svg className="ml-0.5 h-4 w-4 text-gray-500" viewBox="0 0 20 20" fill="currentColor">
+          <path d="M5.25 7.5 10 12.25 14.75 7.5l1.06 1.06L10 14.37 4.19 8.56 5.25 7.5z" />
+        </svg>
       </button>
 
+      {/* Popover (Google palette style) */}
       {isOpen && (
-        <div className="absolute z-50 mt-1 p-3 bg-white border border-gray-200 rounded-lg shadow-lg">
-          <div className="grid grid-cols-6 gap-3">
-            {colors.map((color) => (
-              <button
-                key={color.value}
-                type="button"
-                onClick={() => {
-                  onChange(color.value);
-                  setIsOpen(false);
-                }}
-                className={`relative w-7 h-7 rounded-full border-2 transition-all flex items-center justify-center ${
-                  value === color.value
-                    ? 'border-blue-600'
-                    : 'border-gray-300 hover:border-gray-400'
-                }`}
-                style={{ backgroundColor: color.color }}
-                title={color.label}
-              >
-                {value === color.value && (
-                  <svg
-                    className="w-4 h-4 text-white drop-shadow-md"
-                    fill="currentColor"
-                    viewBox="0 0 20 20"
-                  >
-                    <path
-                      fillRule="evenodd"
-                      d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
-                      clipRule="evenodd"
-                    />
-                  </svg>
-                )}
-              </button>
-            ))}
+        <div
+          className="absolute z-50 mt-2 w-[150px] rounded-lg border border-gray-200 bg-white p-1.5 shadow-lg"
+          role="menu"
+        >
+          <div className="grid grid-cols-6 gap-1.5">
+            {colors.map((c) => {
+              const selected = c.value === value;
+
+              return (
+                <button
+                  key={c.value}
+                  type="button"
+                  onClick={() => {
+                    onChange(c.value);
+                    setIsOpen(false);
+                  }}
+                  className="relative h-4 w-4 rounded-full focus:outline-none"
+                  title={c.label}
+                  role="menuitem"
+                >
+                  {/* outer ring (thin gray like Google) */}
+                  <span className="absolute inset-0 rounded-full border border-gray-300" />
+
+                  {/* color dot */}
+                  <span
+                    className="absolute inset-[2px] rounded-full"
+                    style={{ backgroundColor: c.color }}
+                  />
+
+                  {/* selected: blue ring */}
+                  {selected && (
+                    <span className="absolute -inset-[1px] rounded-full ring-2 ring-blue-600" />
+                  )}
+
+                </button>
+              );
+            })}
           </div>
         </div>
       )}
     </div>
   );
 }
-

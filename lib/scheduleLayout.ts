@@ -95,34 +95,67 @@ export class ScheduleLayoutService {
   }
 
   private detectTimeLabels(boxes: OcrTextBox[]): TimeLabel[] {
-    const timePattern = /^(\d{1,2})(?::(\d{2}))?\s*(am|pm)$/i;
-    const timeLabels: TimeLabel[] = [];
-
-    for (const box of boxes) {
-      const text = box.text.trim();
-      const match = text.match(timePattern);
-      if (match) {
-        let hours = parseInt(match[1], 10);
-        const minutes = parseInt(match[2] || '0', 10);
-        const period = match[3].toLowerCase();
-
-        if (period === 'pm' && hours !== 12) {
-          hours += 12;
-        } else if (period === 'am' && hours === 12) {
-          hours = 0;
-        }
-
-        const timeString = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
-        timeLabels.push({
-          text,
-          time: timeString,
-          y: box.y,
-        });
-      }
+    // Matches:
+    //  - 9am, 10pm
+    //  - 9:15am, 12:30pm
+    //  - 9:15, 11:30 (no am/pm)
+    const pattern = /^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/i;
+  
+    // Work top-to-bottom so we can “inherit” am/pm for labels like 9:15
+    const sorted = [...boxes].sort((a, b) => a.y - b.y);
+  
+    let currentPeriod: "am" | "pm" | null = null;
+    const out: TimeLabel[] = [];
+  
+    for (const box of sorted) {
+      const raw = box.text.trim().toLowerCase();
+      const m = raw.match(pattern);
+      if (!m) continue;
+  
+      let h = parseInt(m[1], 10);
+      const min = parseInt(m[2] ?? "0", 10);
+      const period = (m[3] as ("am" | "pm" | undefined)) ?? undefined;
+  
+      // Filter out junk like "1" that OCR might produce
+      if (h < 1 || h > 12) continue;
+      if (min < 0 || min >= 60) continue;
+  
+      // If the label explicitly says am/pm, lock it in.
+      if (period) currentPeriod = period;
+  
+      // If no am/pm, inherit from the most recent explicit label.
+      // Default to 'am' if we never saw one (works for typical schedules).
+      const inferredPeriod = currentPeriod ?? "am";
+  
+      // Convert to 24h time
+      let hh = h % 12;
+      if (inferredPeriod === "pm") hh += 12;
+  
+      // Special-case 12am/12pm handling
+      if (inferredPeriod === "am" && h === 12) hh = 0;
+      if (inferredPeriod === "pm" && h === 12) hh = 12;
+  
+      const timeString = `${String(hh).padStart(2, "0")}:${String(min).padStart(2, "0")}`;
+  
+      out.push({
+        text: box.text.trim(),
+        time: timeString,
+        y: box.y + box.height / 2,
+      });
     }
-
-    return timeLabels.sort((a, b) => a.y - b.y);
+  
+    // Deduplicate times that may appear twice due to OCR
+    // Keep the first occurrence (top-most)
+    const seenTime = new Set<string>();
+    const deduped: TimeLabel[] = [];
+    for (const t of out.sort((a, b) => a.y - b.y)) {
+      if (seenTime.has(t.time)) continue;
+      seenTime.add(t.time);
+      deduped.push(t);
+    }
+    return deduped;
   }
+  
 
   private detectDayHeaders(boxes: OcrTextBox[]): DayHeader[] {
     const dayHeaders: DayHeader[] = [];
@@ -144,46 +177,67 @@ export class ScheduleLayoutService {
 
   private buildYToTimeMap(timeLabels: TimeLabel[]): (y: number) => string {
     const labels = [...timeLabels].sort((a, b) => a.y - b.y);
-    const minutes = labels.map(l => this.timeToMinutes(l.time));
+    if (labels.length < 2) {
+      const fallback = labels[0]?.time ?? "09:00";
+      return () => fallback;
+    }
+  
+    // Fit: minutes = a*y + b  (least squares)
+    const ys = labels.map(l => l.y);
+    const ts = labels.map(l => this.timeToMinutes(l.time));
+  
+    const n = ys.length;
+    const sumY = ys.reduce((s, v) => s + v, 0);
+    const sumT = ts.reduce((s, v) => s + v, 0);
+    const sumYY = ys.reduce((s, v) => s + v * v, 0);
+    const sumYT = ys.reduce((s, v, i) => s + v * ts[i], 0);
+  
+    const denom = n * sumYY - sumY * sumY;
+    const a = denom === 0 ? 0 : (n * sumYT - sumY * sumT) / denom;
+    const b = (sumT - a * sumY) / n;
   
     return (y: number) => {
-      if (labels.length === 0) return '09:00';
-  
-      // If above the first label, treat as 30 minutes before it
-      if (y <= labels[0].y) {
-        return this.minutesToTime(minutes[0] - 30);
-      }
-  
-      // If below the last label, treat as 30 minutes after it
-      if (y >= labels[labels.length - 1].y) {
-        return this.minutesToTime(minutes[minutes.length - 1] + 30);
-      }
-  
-      // Find the two labels that bound this y
-      let lowerIndex = 0;
-      for (let i = 0; i < labels.length - 1; i++) {
-        if (y >= labels[i].y && y <= labels[i + 1].y) {
-          lowerIndex = i;
-          break;
-        }
-      }
-  
-      const lower = labels[lowerIndex];
-      const upper = labels[lowerIndex + 1];
-      const y0 = lower.y;
-      const y1 = upper.y;
-      const t0 = minutes[lowerIndex];
-      const t1 = minutes[lowerIndex + 1];
-  
-      const ratio = (y - y0) / (y1 - y0);
-      // Linear interpolation (like before) …
-      let interpolated = t0 + ratio * (t1 - t0);
-      // … then shift everything by +30 minutes, because labels are at
-      // the center of the hour slot, not the boundary
-      interpolated += 30;
-  
-      return this.minutesToTime(interpolated);
+      const minutes = a * y + b;
+      return this.minutesToTime(minutes);
     };
+  }    
+
+  private snapDuration(endMin: number, startMin: number): number {
+    const dur = endMin - startMin;
+  
+    // Typical lecture lengths (Berkeley often 60 or 90)
+    const options = [60, 90, 120];
+  
+    // If OCR underestimates and lands near 60 but could be 90, bias up.
+    // Tune threshold: if dur is between 60 and 80, pick 90.
+    if (dur >= 60 && dur <= 80) return startMin + 90;
+  
+    // Otherwise choose nearest
+    const best = options.reduce((best, d) =>
+      Math.abs(d - dur) < Math.abs(best - dur) ? d : best
+    , options[0]);
+  
+    return startMin + best;
+  }
+  
+  
+
+  private snapToHalfHourNo15or45(mins: number, mode: "start" | "end"): number {
+    const m = ((mins % 60) + 60) % 60; // 0..59
+    if (m === 0 || m === 30) return mins;
+  
+    if (mode === "start") {
+      // FLOOR to :00 or :30
+      return m < 30 ? (mins - m) : (mins - (m - 30));
+    }
+  
+    // END: CEIL to :30 or next :00
+    return m < 30 ? (mins + (30 - m)) : (mins + (60 - m));
+  }  
+  
+  private enforceMinDuration(startMin: number, endMin: number, minDuration: number): number {
+    if (endMin - startMin >= minDuration) return endMin;
+    return startMin + minDuration;
   }
   
 
@@ -318,7 +372,7 @@ export class ScheduleLayoutService {
     cluster: OcrTextBox[],
     xToDay: (x: number) => "MO" | "TU" | "WE" | "TH" | "FR" | null,
     yToTime: (y: number) => string,
-    _slotHeight: number  // no longer needed, but kept for signature compatibility
+    _slotHeight: number
   ): ClassBlock | null {
     if (cluster.length === 0) return null;
   
@@ -330,66 +384,54 @@ export class ScheduleLayoutService {
     const dayOfWeek = xToDay(centerX);
     if (!dayOfWeek) return null;
   
-    // Bounding box of the whole class block
-    const topY = Math.min(...cluster.map((b) => b.y));
-    const bottomY = Math.max(...cluster.map((b) => b.y + b.height));
+    // ---------- TIME BOUNDS ----------
+    const topYText = Math.min(...cluster.map((b) => b.y));
+    const bottomYText = Math.max(...cluster.map((b) => b.y + b.height));
   
-    // Map Y → time using your yToTime (which already accounts for label position)
-    const rawStartTime = yToTime(topY);
-    const rawEndTime = yToTime(bottomY);
+    // Start time = top Y → round to nearest half hour
+    const rawStart = yToTime(topYText);
+    const startTime = this.roundTimeToHalfHour(rawStart);
   
-    // Add a bit of padding on the end so rounding doesn’t clip the class short
-    const paddedEnd = this.addMinutes(rawEndTime, 10);
+    // End time = bottom Y + 45 minutes → round to nearest half hour
+    // (We add 45 instead of 15 because rounding requires more padding to round up correctly)
+    const rawEnd = yToTime(bottomYText);
+    const rawEndWithPadding = this.addMinutes(rawEnd, 45);
+    const endTime = this.roundTimeToHalfHour(rawEndWithPadding);
   
-    // Snap to half-hours
-    const startTime = this.roundTimeDownToHalfHour(rawStartTime);
-    const endTime = this.roundTimeUpToHalfHour(paddedEnd);
-
-    // Parse text lines - combine text from boxes, sorted by Y position, then X position
+    // ---------- TEXT PARSING ----------
     const sortedBoxes = [...cluster].sort((a, b) => {
       const yDiff = a.y - b.y;
-      if (Math.abs(yDiff) < 20) {
-        // If Y positions are close (same line), sort by X
-        return a.x - b.x;
-      }
+      if (Math.abs(yDiff) < 20) return a.x - b.x;
       return yDiff;
     });
-    
+  
     const lines: string[] = [];
     let currentLine = '';
     let currentLineY = -1;
-    const LINE_HEIGHT_THRESHOLD = 25; // pixels
-    
+    const LINE_HEIGHT_THRESHOLD = 25;
+  
     for (const box of sortedBoxes) {
       const text = box.text.trim();
-      if (text.length === 0) continue;
-      
+      if (!text) continue;
+  
       if (currentLineY < 0 || Math.abs(box.y - currentLineY) > LINE_HEIGHT_THRESHOLD) {
-        // New line
-        if (currentLine) {
-          lines.push(currentLine.trim());
-        }
+        if (currentLine) lines.push(currentLine.trim());
         currentLine = text;
         currentLineY = box.y;
       } else {
-        // Same line, append with space
         currentLine += (currentLine ? ' ' : '') + text;
       }
     }
-    if (currentLine) {
-      lines.push(currentLine.trim());
-    }
-    
+    if (currentLine) lines.push(currentLine.trim());
     if (lines.length === 0) return null;
-
-    // Combine course name parts (e.g., "Computer Science-186" might be split)
-    // Look for course patterns and combine adjacent lines that look like course names
+  
+    // Title detection
     let titleParts: string[] = [];
     let titleEndIndex = 0;
-    
+  
     const coursePattern = /(science|math|engineering|computer|chemistry|physics|biology|mathematics)/i;
     const numberPattern = /^\d+$/;
-    
+  
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
       if (coursePattern.test(line) || numberPattern.test(line) || line.includes('-')) {
@@ -399,29 +441,29 @@ export class ScheduleLayoutService {
         break;
       }
     }
-    
-    // If we found course name parts, combine them
-    let title = titleParts.length > 0 
-      ? titleParts.join(' ').replace(/\s+-\s+|\s+-|-\s+/g, '-').replace(/\s+/g, ' ')
-      : lines[0] || 'Untitled';
-    
-    // Clean up title (remove extra spaces, normalize hyphens)
+  
+    let title =
+      titleParts.length > 0
+        ? titleParts.join(' ')
+            .replace(/\s+-\s+|\s+-|-\s+/g, '-')
+            .replace(/\s+/g, ' ')
+        : lines[0] || 'Untitled';
+  
     title = title.replace(/\s+/g, ' ').trim();
-    
-    // Location is the first line after title that looks like a location
+    if (title.length < 1) return null;
+  
+    // Location
     let location = '';
     let instructorStartIndex = titleEndIndex;
-    
-    const locationPattern = /^[A-Za-z]+\s+\d+$/; // e.g., "Soda 306"
+  
+    const locationPattern = /^[A-Za-z]+\s+\d+$/; // "Soda 306"
     for (let i = titleEndIndex; i < lines.length; i++) {
       if (locationPattern.test(lines[i])) {
         location = lines[i];
         instructorStartIndex = i + 1;
         break;
       }
-      // Also check for lines that are just numbers (room numbers)
-      if (lines[i].match(/^\d{3,}$/)) {
-        // Might be a room number, check if previous line was a building name
+      if (/^\d{3,}$/.test(lines[i])) {
         if (i > titleEndIndex && /^[A-Za-z]+$/.test(lines[i - 1])) {
           location = `${lines[i - 1]} ${lines[i]}`;
           instructorStartIndex = i + 1;
@@ -429,24 +471,25 @@ export class ScheduleLayoutService {
         }
       }
     }
-    
-    // If no location pattern found, use the next line after title as location
+  
     if (!location && lines.length > titleEndIndex) {
       location = lines[titleEndIndex];
       instructorStartIndex = titleEndIndex + 1;
     }
-
-    // Everything after location is instructors
-    const instructors = lines.slice(instructorStartIndex)
-      .filter(l => l.length > 0)
-      .join(', ')
-      .trim() || undefined;
-
-    // Validate we have a title (minimum requirement)
-    if (title.length < 1) return null;
-    
-    // Location and instructors are optional - allow classes with just a title
-
+  
+    const instructors =
+      lines.slice(instructorStartIndex).filter((l) => l.length > 0).join(', ').trim() || undefined;
+  
+    console.log({
+      title,
+      topYText,
+      bottomYText,
+      rawStart,
+      rawEndWithPadding,
+      startTime,
+      endTime,
+    });
+  
     return {
       id: `${dayOfWeek}-${startTime}-${Math.random().toString(36).substr(2, 9)}`,
       title,
@@ -456,9 +499,8 @@ export class ScheduleLayoutService {
       startTime,
       endTime,
       enabled: true,
-      // Color will be assigned later
     };
-  }
+  }  
 
   private timeToMinutes(time: string): number {
     const [hours, minutes] = time.split(':').map(Number);
