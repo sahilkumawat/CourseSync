@@ -16,6 +16,28 @@ export const authOptions: NextAuthOptions = {
     }),
   ],
   callbacks: {
+    async signIn({ user, account, profile }) {
+      // Check if email allowlist is configured
+      const allowedEmails = process.env.ALLOWED_EMAILS;
+      if (!allowedEmails) {
+        // If no allowlist is set, allow all users (for development)
+        return true;
+      }
+
+      // Parse comma-separated list of allowed emails (case-insensitive)
+      const allowedList = allowedEmails
+        .split(',')
+        .map((email) => email.trim().toLowerCase())
+        .filter((email) => email.length > 0);
+
+      // Check if user's email is in the allowlist
+      const userEmail = user.email?.toLowerCase();
+      if (!userEmail) {
+        return false; // No email, deny access
+      }
+
+      return allowedList.includes(userEmail);
+    },
     async jwt({ token, account }: any) {
       if (account) {
         token.accessToken = account.access_token;
@@ -32,6 +54,7 @@ export const authOptions: NextAuthOptions = {
   },
   pages: {
     signIn: '/',
+    error: '/unauthorized',
   },
   secret: process.env.NEXTAUTH_SECRET,
 };

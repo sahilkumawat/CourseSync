@@ -18,8 +18,8 @@ export default function ReviewPage() {
   const { data: session, status } = useSession();
   const router = useRouter();
   const [classes, setClasses] = useState<ClassBlock[]>([]);
-  const [semesterStartDate, setSemesterStartDate] = useState('');
-  const [semesterEndDate, setSemesterEndDate] = useState('');
+  const [semesterStartDate, setSemesterStartDate] = useState('2026-01-20');
+  const [semesterEndDate, setSemesterEndDate] = useState('2026-05-18');
   const [timeZone, setTimeZone] = useState('America/Los_Angeles');
   const [createNewCalendar, setCreateNewCalendar] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);

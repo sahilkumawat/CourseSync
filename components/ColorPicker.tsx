@@ -31,7 +31,7 @@ export default function ColorPicker({ value, onChange, colors }: ColorPickerProp
 
   return (
     <div className="relative inline-block" ref={pickerRef}>
-      {/* Trigger (Google-ish pill) */}
+      {/* Trigger */}
       <button
         type="button"
         onClick={() => setIsOpen((v) => !v)}
@@ -49,7 +49,7 @@ export default function ColorPicker({ value, onChange, colors }: ColorPickerProp
         </svg>
       </button>
 
-      {/* Popover (Google palette style) */}
+      {/* Popover */}
       {isOpen && (
         <div
           className="absolute z-50 mt-2 w-[150px] rounded-lg border border-gray-200 bg-white p-1.5 shadow-lg"
@@ -71,7 +71,7 @@ export default function ColorPicker({ value, onChange, colors }: ColorPickerProp
                   title={c.label}
                   role="menuitem"
                 >
-                  {/* outer ring (thin gray like Google) */}
+                  {/* outer ring */}
                   <span className="absolute inset-0 rounded-full border border-gray-300" />
 
                   {/* color dot */}

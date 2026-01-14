@@ -70,6 +70,11 @@ GOOGLE_REDIRECT_URI=http://localhost:3000/api/auth/callback/google
 # Google Cloud Vision (if using service account key file)
 GOOGLE_CLOUD_KEYFILE=path/to/service-account-key.json
 GOOGLE_CLOUD_PROJECT_ID=your-project-id
+
+# Email Allowlist (optional - comma-separated list of allowed emails)
+# If not set, all users are allowed (for development)
+# Example: ALLOWED_EMAILS=user1@berkeley.edu,user2@berkeley.edu,admin@example.com
+ALLOWED_EMAILS=your-email@berkeley.edu,another-email@berkeley.edu
 ```
 
 Generate a random secret for `NEXTAUTH_SECRET`:
@@ -159,11 +164,19 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 - No automatic detection of schedule format variations
 - Times are rounded to nearest half-hour (:00 or :30)
 
+## Access Control
+
+- **Email Allowlist**: Optionally restrict access to specific email addresses
+- Configure `ALLOWED_EMAILS` in `.env.local` as a comma-separated list (e.g., `user1@berkeley.edu,user2@berkeley.edu`)
+- If `ALLOWED_EMAILS` is not set, all authenticated users are allowed (for development)
+- Unauthorized users see an access restricted message and cannot use the service
+
 ## Error Handling
 
 - If OCR fails: User sees error message suggesting higher-resolution screenshot
 - If parsing fails: User sees error message about schedule format
 - If Calendar API errors: Generic error message with details in console (dev mode)
+- If email not in allowlist: User is redirected to unauthorized page
 
 ## Development
 

@@ -6,7 +6,7 @@ export class OCRService {
 
   constructor() {
     // For MVP, we'll use application default credentials or env var
-    // In production, you'd use a service account key file
+    // In production, need to use a service account key file
     const config: any = {};
     if (process.env.GOOGLE_CLOUD_KEYFILE) {
       config.keyFilename = process.env.GOOGLE_CLOUD_KEYFILE;
