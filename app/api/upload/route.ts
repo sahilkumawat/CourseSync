@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
-import { writeFile, mkdir } from 'fs/promises';
-import { join } from 'path';
 import { OCRService } from '@/lib/ocrService';
 import { ScheduleLayoutService } from '@/lib/scheduleLayout';
 
@@ -25,21 +23,9 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'File must be an image' }, { status: 400 });
     }
 
-    // Create uploads directory if it doesn't exist
-    const uploadsDir = join(process.cwd(), 'tmp');
-    try {
-      await mkdir(uploadsDir, { recursive: true });
-    } catch (error) {
-      // Directory might already exist
-    }
-
-    // Save file temporarily
+    // Convert file to buffer for OCR (no need to write to disk)
     const bytes = await file.arrayBuffer();
     const buffer = Buffer.from(bytes);
-    const filename = `${Date.now()}-${file.name}`;
-    const filepath = join(uploadsDir, filename);
-
-    await writeFile(filepath, buffer);
 
     // Run OCR and parsing
     const ocrService = new OCRService();
@@ -61,9 +47,6 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
-
-    // Clean up file (optional - could keep for debugging)
-    // await unlink(filepath);
 
     return NextResponse.json({ classBlocks });
   } catch (error) {
