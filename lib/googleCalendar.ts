@@ -1,12 +1,11 @@
 import { google } from 'googleapis';
 import { addDays, format, parse, startOfWeek } from 'date-fns';
-import { zonedTimeToUtc } from 'date-fns-tz';
 import type { ClassBlock, CalendarSyncPayload } from './types';
 
 export class GoogleCalendarService {
   private calendar: ReturnType<typeof google.calendar>;
 
-  constructor(authClient: ReturnType<typeof google.auth.OAuth2>) {
+  constructor(authClient: InstanceType<typeof google.auth.OAuth2>) {
     this.calendar = google.calendar({ version: 'v3', auth: authClient });
   }
 

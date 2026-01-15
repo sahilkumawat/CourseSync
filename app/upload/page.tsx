@@ -82,7 +82,7 @@ export default function UploadPage() {
           <ul className="list-disc list-inside space-y-1">
             <li>Use a clear, high-resolution screenshot</li>
             <li>Ensure the schedule shows all days of the week (Monday-Friday)</li>
-            <li>Make sure time labels (e.g., "10am", "2:30pm") are visible</li>
+            <li>Make sure time labels (e.g., &quot;10am&quot;, &quot;2:30pm&quot;) are visible</li>
             <li>The schedule should be in the standard weekly grid format</li>
           </ul>
         </div>

@@ -17,18 +17,17 @@ export const authOptions: NextAuthOptions = {
   ],
   callbacks: {
     async signIn({ user, account, profile }) {
-      // Check if email allowlist is configured
-      const allowedEmails = process.env.ALLOWED_EMAILS;
-      if (!allowedEmails) {
-        // If no allowlist is set, allow all users (for development)
-        return true;
-      }
-
-      // Parse comma-separated list of allowed emails (case-insensitive)
-      const allowedList = allowedEmails
-        .split(',')
-        .map((email) => email.trim().toLowerCase())
-        .filter((email) => email.length > 0);
+      // Allowed emails list (hardcoded)
+      const allowedEmails = [
+        'sahilk_17@berkeley.edu',
+        'neeleshbokkisam@berkeley.edu',
+        'shyong05@berkeley.edu',
+        'shiama@berkeley.edu',
+        'avanik@berkeley.edu',
+        'krisha.prabakaran@berkeley.edu',
+        'willchang@berkeley.edu',
+        'tylerdee@berkeley.edu',
+      ];
 
       // Check if user's email is in the allowlist
       const userEmail = user.email?.toLowerCase();
@@ -36,7 +35,7 @@ export const authOptions: NextAuthOptions = {
         return false; // No email, deny access
       }
 
-      return allowedList.includes(userEmail);
+      return allowedEmails.includes(userEmail);
     },
     async jwt({ token, account }: any) {
       if (account) {

@@ -1,16 +1,12 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  output: 'standalone', // Enable standalone output for Docker
   serverActions: {
     bodySizeLimit: '10mb',
   },
   webpack: (config, { isServer }) => {
-    // Suppress warnings about missing 'request' module from @google-cloud/vision
-    // This is only used server-side in API routes, so it's safe to ignore
     if (isServer) {
-      config.resolve.fallback = {
-        ...config.resolve.fallback,
-        request: false,
-      };
+      config.externals.push('request');
     }
     return config;
   },
