@@ -1,6 +1,6 @@
 # CourseSync
 
-CourseSync is a Next.js application that allows Berkeley students to upload a screenshot of their weekly class schedule and automatically sync it to Google Calendar as recurring events.
+CourseSync is a Next.js application that allows Berkeley students to upload a screenshot of their weekly class schedule and automatically sync it to Google Calendar as recurring events. The production site is available at `https://coursesyncer.com`.
 
 ## Features
 
@@ -21,74 +21,6 @@ CourseSync is a Next.js application that allows Berkeley students to upload a sc
 - **Authentication**: NextAuth.js with Google OAuth
 - **Calendar**: Google Calendar API
 - **Date Handling**: date-fns v3, date-fns-tz v3
-
-## Prerequisites
-
-1. Node.js 18+ and npm/yarn
-2. Google Cloud Platform account with:
-   - Cloud Vision API enabled
-   - OAuth 2.0 credentials (Client ID and Client Secret)
-   - Service account key (optional, for Vision API)
-3. NextAuth secret for session encryption
-
-## Setup
-
-1. **Clone and install dependencies:**
-
-```bash
-npm install
-```
-
-2. **Set up Google Cloud Vision API:**
-
-   - Go to [Google Cloud Console](https://console.cloud.google.com/)
-   - Create a new project or select an existing one
-   - Enable the Cloud Vision API
-   - Either:
-     - Option A: Create a service account and download the key file
-     - Option B: Use Application Default Credentials (for local dev: `gcloud auth application-default login`)
-
-3. **Set up Google OAuth credentials:**
-
-   - Go to [Google Cloud Console > APIs & Services > Credentials](https://console.cloud.google.com/apis/credentials)
-   - Create OAuth 2.0 Client ID (Web application)
-   - Add authorized redirect URI: `http://localhost:3000/api/auth/callback/google` (and your production URL)
-   - Download the Client ID and Client Secret
-
-4. **Create `.env.local` file:**
-
-```env
-# NextAuth
-NEXTAUTH_URL=http://localhost:3000
-NEXTAUTH_SECRET=your-random-secret-here
-
-# Google OAuth
-GOOGLE_CLIENT_ID=your-google-client-id
-GOOGLE_CLIENT_SECRET=your-google-client-secret
-GOOGLE_REDIRECT_URI=http://localhost:3000/api/auth/callback/google
-
-# Google Cloud Vision (if using service account key file)
-GOOGLE_CLOUD_KEYFILE=path/to/service-account-key.json
-GOOGLE_CLOUD_PROJECT_ID=your-project-id
-
-# Email Allowlist (optional - comma-separated list of allowed emails)
-# If not set, all users are allowed (for development)
-# Example: ALLOWED_EMAILS=user1@berkeley.edu,user2@berkeley.edu,admin@example.com
-ALLOWED_EMAILS=your-email@berkeley.edu,another-email@berkeley.edu
-```
-
-Generate a random secret for `NEXTAUTH_SECRET`:
-```bash
-openssl rand -base64 32
-```
-
-5. **Run the development server:**
-
-```bash
-npm run dev
-```
-
-Open [http://localhost:3000](http://localhost:3000) in your browser.
 
 ## Usage
 
@@ -177,22 +109,6 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 - If parsing fails: User sees error message about schedule format
 - If Calendar API errors: Generic error message with details in console (dev mode)
 - If email not in allowlist: User is redirected to unauthorized page
-
-## Development
-
-```bash
-# Run dev server
-npm run dev
-
-# Build for production
-npm run build
-
-# Start production server
-npm start
-
-# Lint
-npm run lint
-```
 
 ## License
 
