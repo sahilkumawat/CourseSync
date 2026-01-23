@@ -30,10 +30,9 @@ export default function UnauthorizedPage() {
             Access Restricted
           </h1>
           <p className="text-xl text-gray-600 mb-8">
-            Your email address is not authorized to use this service.
-          </p>
-          <p className="text-gray-500 mb-8">
-            If you believe this is an error, please contact the administrator.
+            CourseSync is currently in beta testing for Berkeley users. If
+            you&apos;d like access, email sahilk_17@berkeley.edu to be added as
+            a tester.
           </p>
           <button
             onClick={() => router.push('/')}
