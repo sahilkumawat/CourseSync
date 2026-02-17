@@ -27,6 +27,7 @@ export const authOptions: NextAuthOptions = {
         'krisha.prabakaran@berkeley.edu',
         'willchang@berkeley.edu',
         'tylerdee@berkeley.edu',
+        'sahil.kumawat05@gmail.com',
       ];
 
       // Check if user's email is in the allowlist
