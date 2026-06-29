@@ -26,6 +26,8 @@ export default function ReviewPage() {
   const [error, setError] = useState<string | null>(null);
   const [errorUrl, setErrorUrl] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+  const [syncedCount, setSyncedCount] = useState(0);
+  const [failures, setFailures] = useState<{ title: string; reason: string }[]>([]);
   const [calendarId, setCalendarId] = useState<string | null>(null);
   const [hasSynced, setHasSynced] = useState(false);
 
@@ -108,6 +110,8 @@ export default function ReviewPage() {
 
       const data = await response.json();
       setSuccess(true);
+      setSyncedCount(data.count ?? 0);
+      setFailures(data.failures ?? []);
       setCalendarId(data.calendarId || null);
       setHasSynced(true);
       // Mark as synced but keep classes for display
@@ -146,10 +150,31 @@ export default function ReviewPage() {
         <h1 className="text-3xl font-bold text-gray-900 mb-8">Review & Sync</h1>
 
         {success && (
-          <div className="mb-6 p-4 bg-green-50 border border-green-200 rounded-md">
-            <p className="text-sm text-green-800 mb-3">
-              Successfully synced {classes.filter((c) => c.enabled).length} events to Google Calendar!
+          <div
+            className={`mb-6 p-4 rounded-md border ${
+              failures.length > 0
+                ? 'bg-yellow-50 border-yellow-200'
+                : 'bg-green-50 border-green-200'
+            }`}
+          >
+            <p
+              className={`text-sm mb-3 ${
+                failures.length > 0 ? 'text-yellow-800' : 'text-green-800'
+              }`}
+            >
+              {failures.length > 0
+                ? `Synced ${syncedCount} of ${syncedCount + failures.length} events. Some classes could not be synced — you can try syncing again.`
+                : `Successfully synced ${syncedCount} events to Google Calendar!`}
             </p>
+            {failures.length > 0 && (
+              <ul className="text-sm text-yellow-800 list-disc list-inside mb-3">
+                {failures.map((f, idx) => (
+                  <li key={idx}>
+                    {f.title}: {f.reason}
+                  </li>
+                ))}
+              </ul>
+            )}
             <a
               href="https://calendar.google.com/calendar/r"
               target="_blank"

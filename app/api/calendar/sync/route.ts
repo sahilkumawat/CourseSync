@@ -34,7 +34,7 @@ export async function POST(request: NextRequest) {
     const calendarId = await calendarService.createCalendarIfNeeded(createNewCalendar);
 
     // Create events
-    const eventIds = await calendarService.createRecurringEvents(
+    const { eventIds, failures } = await calendarService.createRecurringEvents(
       events,
       semesterStartDate,
       semesterEndDate,
@@ -42,11 +42,29 @@ export async function POST(request: NextRequest) {
       calendarId
     );
 
+    const requested = events.filter((e) => e.enabled).length;
+
+    // If every event failed, treat the whole sync as a failure.
+    if (requested > 0 && eventIds.length === 0) {
+      return NextResponse.json(
+        {
+          error: 'Failed to create any calendar events.',
+          details: failures[0]?.reason || 'Unknown error',
+          failures,
+        },
+        { status: 502 }
+      );
+    }
+
     return NextResponse.json({
       success: true,
       eventIds,
       calendarId,
       count: eventIds.length,
+      requested,
+      // Report any classes that didn't sync so the user isn't misled by a "success".
+      partial: failures.length > 0,
+      failures,
     });
   } catch (error: any) {
     console.error('Calendar sync error:', error);

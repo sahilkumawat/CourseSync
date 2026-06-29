@@ -2,27 +2,74 @@ import { google } from 'googleapis';
 import { addDays, format, parse, startOfWeek } from 'date-fns';
 import type { ClassBlock, CalendarSyncPayload } from './types';
 
+// Result of attempting to create every event in a sync request.
+export interface CreateEventsResult {
+  eventIds: string[];
+  failures: { title: string; reason: string }[];
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Google Calendar rate-limit / transient errors that are worth retrying.
+function isRetryable(error: any): boolean {
+  const code = error?.code ?? error?.response?.status;
+  if (code === 429 || code === 403) {
+    // 403 is only retryable when it's a rate-limit (not a permissions/auth failure).
+    const reason =
+      error?.errors?.[0]?.reason ?? error?.response?.data?.error?.errors?.[0]?.reason ?? '';
+    if (code === 403) {
+      return reason === 'rateLimitExceeded' || reason === 'userRateLimitExceeded';
+    }
+    return true;
+  }
+  // Transient server-side errors.
+  return code === 500 || code === 503;
+}
+
 export class GoogleCalendarService {
   private calendar: ReturnType<typeof google.calendar>;
+
+  // Spacing between event inserts to stay under Calendar's per-user write limits.
+  private static readonly THROTTLE_MS = 150;
+  private static readonly MAX_RETRIES = 4;
 
   constructor(authClient: InstanceType<typeof google.auth.OAuth2>) {
     this.calendar = google.calendar({ version: 'v3', auth: authClient });
   }
 
+  // Run an API call with exponential backoff on retryable (rate-limit / transient) errors.
+  private async withRetry<T>(fn: () => Promise<T>): Promise<T> {
+    let attempt = 0;
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      try {
+        return await fn();
+      } catch (error: any) {
+        attempt++;
+        if (attempt > GoogleCalendarService.MAX_RETRIES || !isRetryable(error)) {
+          throw error;
+        }
+        // 0.5s, 1s, 2s, 4s ... plus jitter to avoid thundering-herd retries.
+        const backoff = 500 * 2 ** (attempt - 1) + Math.floor(Math.random() * 250);
+        console.warn(
+          `Calendar API call failed (attempt ${attempt}/${GoogleCalendarService.MAX_RETRIES}), retrying in ${backoff}ms`
+        );
+        await sleep(backoff);
+      }
+    }
+  }
+
   async createCalendarIfNeeded(createNew: boolean): Promise<string> {
     if (createNew) {
-      try {
-        const response = await this.calendar.calendars.insert({
+      const response = await this.withRetry(() =>
+        this.calendar.calendars.insert({
           requestBody: {
             summary: 'Class Schedule',
             description: 'Auto-generated class schedule from CourseSync',
           },
-        });
-        return response.data.id || 'primary';
-      } catch (error: any) {
-        // Re-throw with more context
-        throw error;
-      }
+        })
+      );
+      return response.data.id || 'primary';
     }
     return 'primary';
   }
@@ -33,11 +80,17 @@ export class GoogleCalendarService {
     semesterEndDate: string,
     timeZone: string,
     calendarId: string
-  ): Promise<string[]> {
-    const createdEventIds: string[] = [];
+  ): Promise<CreateEventsResult> {
+    const eventIds: string[] = [];
+    const failures: { title: string; reason: string }[] = [];
 
-    for (const event of events) {
-      if (!event.enabled) continue;
+    const enabledEvents = events.filter((e) => e.enabled);
+
+    for (let i = 0; i < enabledEvents.length; i++) {
+      const event = enabledEvents[i];
+
+      // Throttle between inserts to avoid tripping per-user rate limits.
+      if (i > 0) await sleep(GoogleCalendarService.THROTTLE_MS);
 
       try {
         const eventId = await this.createRecurringEvent(
@@ -47,14 +100,16 @@ export class GoogleCalendarService {
           timeZone,
           calendarId
         );
-        createdEventIds.push(eventId);
-      } catch (error) {
+        eventIds.push(eventId);
+      } catch (error: any) {
+        const reason = error?.message || 'Unknown error';
         console.error(`Error creating event for ${event.title}:`, error);
-        // Continue with other events
+        failures.push({ title: event.title, reason });
+        // Continue with other events; failures are reported back to the caller.
       }
     }
 
-    return createdEventIds;
+    return { eventIds, failures };
   }
 
   private async createRecurringEvent(
@@ -135,10 +190,12 @@ export class GoogleCalendarService {
       requestBody.colorId = event.colorId;
     }
 
-    const response = await this.calendar.events.insert({
-      calendarId,
-      requestBody,
-    });
+    const response = await this.withRetry(() =>
+      this.calendar.events.insert({
+        calendarId,
+        requestBody,
+      })
+    );
 
     return response.data.id || '';
   }
