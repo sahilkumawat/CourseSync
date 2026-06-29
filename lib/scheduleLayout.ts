@@ -1,6 +1,11 @@
 import type { OcrTextBox, ClassBlock, TimeLabel, DayHeader } from './types';
+import type { BlockRegion } from './blockDetection';
 
 export class ScheduleLayoutService {
+  // Minutes of clock time per vertical pixel, calibrated from the time labels
+  // in buildLayout. Lets geometry (px) be converted into durations (minutes).
+  private minutesPerPixel = 0;
+
   private static readonly DAY_MAP: Record<string, "MO" | "TU" | "WE" | "TH" | "FR"> = {
     'monday': 'MO',
     'mon': 'MO',
@@ -26,6 +31,9 @@ export class ScheduleLayoutService {
     }
 
     const slotHeight = this.computeSlotHeight(timeLabels);
+    // Minutes represented by one pixel of vertical travel, derived from the
+    // label spacing. Used to convert the px slot height into a clock duration.
+    this.minutesPerPixel = this.computeMinutesPerPixel(timeLabels);
     const yToTime = this.buildYToTimeMap(timeLabels);
     const xToDay = this.buildXToDayMap(dayHeaders);
 
@@ -74,7 +82,7 @@ export class ScheduleLayoutService {
       return true;
     });
 
-    const clusters = this.clusterEventBoxes(eventCandidates, xToDay);
+    const clusters = this.clusterEventBoxes(eventCandidates, xToDay, slotHeight);
     const classBlocks = clusters
       .map((cluster) => this.toClassBlock(cluster, xToDay, yToTime, slotHeight))
       .filter((block): block is ClassBlock => {
@@ -94,58 +102,127 @@ export class ScheduleLayoutService {
     return { classBlocks };
   }
 
+  /**
+   * Preferred parsing path: use the detected colored block rectangles to define
+   * each class's exact bounds, then assign OCR text to whichever block it falls
+   * inside. This sidesteps the two hardest text-only problems — separating
+   * stacked classes in one column, and recovering end times from text that
+   * underfills its block.
+   *
+   * Returns an empty result if there aren't enough axis labels or regions; the
+   * caller can fall back to the text-clustering buildLayout().
+   */
+  buildLayoutFromRegions(
+    boxes: OcrTextBox[],
+    regions: BlockRegion[]
+  ): { classBlocks: ClassBlock[] } {
+    const timeLabels = this.detectTimeLabels(boxes);
+    const dayHeaders = this.detectDayHeaders(boxes);
+
+    if (timeLabels.length < 2 || dayHeaders.length === 0 || regions.length === 0) {
+      return { classBlocks: [] };
+    }
+
+    const yToTime = this.buildYToTimeMap(timeLabels);
+    const xToDay = this.buildXToDayMap(dayHeaders);
+
+    const timeLabelKeys = new Set(timeLabels.map((t) => t.y));
+    const classBlocks: ClassBlock[] = [];
+
+    for (const region of regions) {
+      const day = xToDay(region.x + region.width / 2);
+      if (!day) continue;
+
+      // Exact bounds → start from the top, duration from the true block height.
+      const startTime = this.roundTimeToHalfHour(yToTime(region.y));
+      const rawEnd = yToTime(region.y + region.height);
+      const rawDuration = this.timeToMinutes(rawEnd) - this.timeToMinutes(startTime);
+      const duration = this.snapDuration(rawDuration);
+      const endTime = this.minutesToTime(this.timeToMinutes(startTime) + duration);
+
+      // Assign text whose center falls inside this region (with a small margin).
+      const margin = 6;
+      const inside = boxes.filter((b) => {
+        if (timeLabelKeys.has(b.y + b.height / 2)) return false;
+        if (this.isDayHeader(b, dayHeaders)) return false;
+        const cx = b.x + b.width / 2;
+        const cy = b.y + b.height / 2;
+        return (
+          cx >= region.x - margin &&
+          cx <= region.x + region.width + margin &&
+          cy >= region.y - margin &&
+          cy <= region.y + region.height + margin
+        );
+      });
+      if (inside.length === 0) continue;
+
+      const parsed = this.parseTextLines(inside);
+      if (!parsed || !parsed.title || /^\d{1,2}:\d{2}\s*(am|pm)?$/i.test(parsed.title)) {
+        continue;
+      }
+
+      classBlocks.push({
+        id: `${day}-${startTime}-${Math.random().toString(36).substr(2, 9)}`,
+        title: parsed.title,
+        location: parsed.location,
+        instructors: parsed.instructors,
+        dayOfWeek: day,
+        startTime,
+        endTime,
+        enabled: true,
+      });
+    }
+
+    this.assignColors(classBlocks);
+    return { classBlocks };
+  }
+
+  // Snap a raw duration (minutes) to the nearest 30-minute increment, with a
+  // 60-minute minimum. Matches the convention that classes are 60/90/120/...
+  private snapDuration(rawMinutes: number): number {
+    const snapped = Math.round(rawMinutes / 30) * 30;
+    return Math.max(60, snapped);
+  }
+
   private detectTimeLabels(boxes: OcrTextBox[]): TimeLabel[] {
-    // Matches:
-    //  - 9am, 10pm
-    //  - 9:15am, 12:30pm
-    //  - 9:15, 11:30 (no am/pm)
-    const pattern = /^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/i;
-  
-    // Work top-to-bottom so we can “inherit” am/pm for labels like 9:15
+    // A time-axis label must carry an explicit am/pm. Requiring the suffix is
+    // what separates a real label ("10am") from a stray room number or count
+    // ("10") that would otherwise corrupt the y->time fit.
+    //  - 9am, 10pm, 9:15am, 12:30pm
+    const pattern = /^(\d{1,2})(?::(\d{2}))?\s*(am|pm)$/i;
+
+    // Work top-to-bottom (smaller y = earlier time on the grid).
     const sorted = [...boxes].sort((a, b) => a.y - b.y);
-  
-    let currentPeriod: "am" | "pm" | null = null;
+
     const out: TimeLabel[] = [];
-  
+
     for (const box of sorted) {
       const raw = box.text.trim().toLowerCase();
       const m = raw.match(pattern);
       if (!m) continue;
-  
-      let h = parseInt(m[1], 10);
+
+      const h = parseInt(m[1], 10);
       const min = parseInt(m[2] ?? "0", 10);
-      const period = (m[3] as ("am" | "pm" | undefined)) ?? undefined;
-  
-      // Filter out junk like "1" that OCR might produce
+      const period = m[3].toLowerCase() as "am" | "pm";
+
+      // Filter out junk like "13am" that OCR might produce.
       if (h < 1 || h > 12) continue;
       if (min < 0 || min >= 60) continue;
-  
-      // If the label explicitly says am/pm, lock it in.
-      if (period) currentPeriod = period;
-  
-      // If no am/pm, inherit from the most recent explicit label.
-      // Default to 'am' if we never saw one (works for typical schedules).
-      const inferredPeriod = currentPeriod ?? "am";
-  
-      // Convert to 24h time
+
+      // Convert to 24h time. 12am -> 00, 12pm -> 12.
       let hh = h % 12;
-      if (inferredPeriod === "pm") hh += 12;
-  
-      // Special-case 12am/12pm handling
-      if (inferredPeriod === "am" && h === 12) hh = 0;
-      if (inferredPeriod === "pm" && h === 12) hh = 12;
-  
+      if (period === "pm") hh += 12;
+
       const timeString = `${String(hh).padStart(2, "0")}:${String(min).padStart(2, "0")}`;
-  
+
       out.push({
         text: box.text.trim(),
         time: timeString,
         y: box.y + box.height / 2,
       });
     }
-  
-    // Deduplicate times that may appear twice due to OCR
-    // Keep the first occurrence (top-most)
+
+    // Deduplicate times that may appear twice due to OCR; keep the top-most.
     const seenTime = new Set<string>();
     const deduped: TimeLabel[] = [];
     for (const t of out.sort((a, b) => a.y - b.y)) {
@@ -153,7 +230,19 @@ export class ScheduleLayoutService {
       seenTime.add(t.time);
       deduped.push(t);
     }
-    return deduped;
+
+    // Monotonicity guard: as y increases the time must increase. A label that
+    // goes backwards is a misread (e.g. "3pm" OCR'd in the morning band) and
+    // would otherwise skew the least-squares fit for every class. Drop it.
+    const monotonic: TimeLabel[] = [];
+    for (const t of deduped) {
+      const prev = monotonic[monotonic.length - 1];
+      if (prev && this.timeToMinutes(t.time) <= this.timeToMinutes(prev.time)) {
+        continue;
+      }
+      monotonic.push(t);
+    }
+    return monotonic;
   }
   
 
@@ -181,26 +270,36 @@ export class ScheduleLayoutService {
       const fallback = labels[0]?.time ?? "09:00";
       return () => fallback;
     }
-  
-    // Fit: minutes = a*y + b  (least squares)
-    const ys = labels.map(l => l.y);
-    const ts = labels.map(l => this.timeToMinutes(l.time));
-  
-    const n = ys.length;
-    const sumY = ys.reduce((s, v) => s + v, 0);
-    const sumT = ts.reduce((s, v) => s + v, 0);
-    const sumYY = ys.reduce((s, v) => s + v * v, 0);
-    const sumYT = ys.reduce((s, v, i) => s + v * ts[i], 0);
-  
-    const denom = n * sumYY - sumY * sumY;
-    const a = denom === 0 ? 0 : (n * sumYT - sumY * sumT) / denom;
-    const b = (sumT - a * sumY) / n;
-  
+
+    const ys = labels.map((l) => l.y);
+    const ts = labels.map((l) => this.timeToMinutes(l.time));
+
+    // Piecewise-linear interpolation between the two surrounding labels. Unlike
+    // a single global least-squares line, this keeps each query local, so one
+    // mis-spaced or misdetected label (e.g. an irregular last row) can't skew
+    // the mapping for the rest of the grid.
+    const interp = (y: number, i: number, j: number): number => {
+      const span = ys[j] - ys[i];
+      if (span === 0) return ts[i];
+      const frac = (y - ys[i]) / span;
+      return ts[i] + frac * (ts[j] - ts[i]);
+    };
+
     return (y: number) => {
-      const minutes = a * y + b;
+      let minutes: number;
+      if (y <= ys[0]) {
+        minutes = interp(y, 0, 1); // extrapolate above the first label
+      } else if (y >= ys[ys.length - 1]) {
+        minutes = interp(y, ys.length - 2, ys.length - 1); // extrapolate below the last
+      } else {
+        // Find the bracketing pair.
+        let hi = 1;
+        while (hi < ys.length - 1 && ys[hi] < y) hi++;
+        minutes = interp(y, hi - 1, hi);
+      }
       return this.minutesToTime(minutes);
     };
-  }    
+  }
 
   
 
@@ -214,6 +313,25 @@ export class ScheduleLayoutService {
 
     const avg = diffs.reduce((a, b) => a + b, 0) / diffs.length;
     return avg;
+  }
+
+  // Derive minutes-per-pixel from the time labels: total minutes spanned
+  // divided by total pixels spanned. Robust to 30- vs 60-minute grid rows.
+  private computeMinutesPerPixel(timeLabels: TimeLabel[]): number {
+    if (timeLabels.length < 2) return 0;
+    const sorted = [...timeLabels].sort((a, b) => a.y - b.y);
+    const first = sorted[0];
+    const last = sorted[sorted.length - 1];
+    const pixelSpan = last.y - first.y;
+    if (pixelSpan <= 0) return 0;
+    const minuteSpan = this.timeToMinutes(last.time) - this.timeToMinutes(first.time);
+    return minuteSpan / pixelSpan;
+  }
+
+  // Convert a pixel slot height into its clock-time equivalent in minutes.
+  private slotHeightToMinutes(slotHeight: number): number {
+    if (slotHeight <= 0 || this.minutesPerPixel <= 0) return 0;
+    return slotHeight * this.minutesPerPixel;
   }
 
   private buildXToDayMap(dayHeaders: DayHeader[]): (x: number) => "MO" | "TU" | "WE" | "TH" | "FR" | null {
@@ -263,10 +381,18 @@ export class ScheduleLayoutService {
 
   private clusterEventBoxes(
     boxes: OcrTextBox[],
-    xToDay: (x: number) => "MO" | "TU" | "WE" | "TH" | "FR" | null
+    xToDay: (x: number) => "MO" | "TU" | "WE" | "TH" | "FR" | null,
+    slotHeight: number
   ): OcrTextBox[][] {
     const clusters: OcrTextBox[][] = [];
     const used = new Set<number>();
+
+    // Scale the vertical merge gap to the grid: lines within one slot belong to
+    // the same class, but two slots apart is a different class. Cap it below a
+    // full slot so adjacent back-to-back classes don't merge. Fall back to the
+    // original 80px when slot height is unknown. Horizontal stays resolution-ish.
+    const verticalGap = slotHeight > 0 ? Math.min(slotHeight * 0.6, 120) : 80;
+    const horizontalGap = slotHeight > 0 ? Math.min(slotHeight * 0.5, 60) : 50;
 
     // First, group boxes by day column to make clustering more efficient
     const boxesByDay: Record<string, OcrTextBox[]> = {};
@@ -305,8 +431,8 @@ export class ScheduleLayoutService {
             const boxBottom = box.y + box.height;
 
             // Check if box overlaps or is very close to cluster bounding box
-            const horizontalOverlap = !(box.x > clusterRight + 50 || boxRight < clusterLeft - 50);
-            const verticalOverlap = !(box.y > clusterBottom + 80 || boxBottom < clusterTop - 80);
+            const horizontalOverlap = !(box.x > clusterRight + horizontalGap || boxRight < clusterLeft - horizontalGap);
+            const verticalOverlap = !(box.y > clusterBottom + verticalGap || boxBottom < clusterTop - verticalGap);
 
             if (horizontalOverlap && verticalOverlap) {
               cluster.push(box);
@@ -335,48 +461,82 @@ export class ScheduleLayoutService {
     cluster: OcrTextBox[],
     xToDay: (x: number) => "MO" | "TU" | "WE" | "TH" | "FR" | null,
     yToTime: (y: number) => string,
-    _slotHeight: number
+    slotHeight: number
   ): ClassBlock | null {
     if (cluster.length === 0) return null;
-  
+
     // Sort by y (top → bottom)
     cluster.sort((a, b) => a.y - b.y);
-  
+
     // Day = column of the first box
     const centerX = cluster[0].x + cluster[0].width / 2;
     const dayOfWeek = xToDay(centerX);
     if (!dayOfWeek) return null;
-  
+
     // ---------- TIME BOUNDS ----------
+    // Convert pixel positions to clock times using the calibrated y->time fit.
+    // The block's top text aligns with its start; its bottom text sits near the
+    // bottom of the block, so both map through the same fit — no magic padding.
     const topYText = Math.min(...cluster.map((b) => b.y));
     const bottomYText = Math.max(...cluster.map((b) => b.y + b.height));
-  
-    // Start time = top Y → round to nearest half hour
+
     const rawStart = yToTime(topYText);
     const startTime = this.roundTimeToHalfHour(rawStart);
-  
-    // End time = bottom Y + 45 minutes → round to nearest half hour
-    // (We add 45 instead of 15 because rounding requires more padding to round up correctly)
+
     const rawEnd = yToTime(bottomYText);
-    const rawEndWithPadding = this.addMinutes(rawEnd, 45);
-    const endTime = this.roundTimeToHalfHour(rawEndWithPadding);
-  
+    let endTime = this.roundTimeToHalfHour(rawEnd);
+
+    // Guarantee a sane minimum duration. If text fills only part of the block
+    // (e.g. a one-line class) the bottom-text time can round back onto the
+    // start; floor the duration to one grid slot (or 60 min if unknown).
+    const slotMinutes = this.slotHeightToMinutes(slotHeight);
+    const minDuration = slotMinutes > 0 ? slotMinutes : 60;
+    if (this.timeToMinutes(endTime) - this.timeToMinutes(startTime) < minDuration) {
+      endTime = this.roundTimeToHalfHour(this.addMinutes(startTime, minDuration));
+    }
+
     // ---------- TEXT PARSING ----------
-    const sortedBoxes = [...cluster].sort((a, b) => {
+    const parsed = this.parseTextLines(cluster);
+    if (!parsed) return null;
+
+    return {
+      id: `${dayOfWeek}-${startTime}-${Math.random().toString(36).substr(2, 9)}`,
+      title: parsed.title,
+      location: parsed.location,
+      instructors: parsed.instructors,
+      dayOfWeek,
+      startTime,
+      endTime,
+      enabled: true,
+    };
+  }
+
+  /**
+   * Group a block's text boxes into lines (top→bottom, left→right within a
+   * line) and split them into title / location / instructor.
+   *
+   * Layout convention on CalCentral blocks:
+   *   line(s) 1..   course title          ("Computer Science-164")
+   *   middle line(s) building + room       ("The Gateway Building" / "1210")
+   *   last line(s)  instructor name(s)     ("Max Willsey")
+   */
+  private parseTextLines(
+    boxes: OcrTextBox[]
+  ): { title: string; location: string; instructors?: string } | null {
+    const sortedBoxes = [...boxes].sort((a, b) => {
       const yDiff = a.y - b.y;
       if (Math.abs(yDiff) < 20) return a.x - b.x;
       return yDiff;
     });
-  
+
     const lines: string[] = [];
     let currentLine = '';
     let currentLineY = -1;
     const LINE_HEIGHT_THRESHOLD = 25;
-  
+
     for (const box of sortedBoxes) {
       const text = box.text.trim();
       if (!text) continue;
-  
       if (currentLineY < 0 || Math.abs(box.y - currentLineY) > LINE_HEIGHT_THRESHOLD) {
         if (currentLine) lines.push(currentLine.trim());
         currentLine = text;
@@ -387,87 +547,67 @@ export class ScheduleLayoutService {
     }
     if (currentLine) lines.push(currentLine.trim());
     if (lines.length === 0) return null;
-  
-    // Title detection
-    // Take lines until we find something that looks like a location (building + number)
-    // or we've taken the first 3 lines (most courses have 1-2 title lines)
-    const locationPattern = /^[A-Za-z]+\s+\d+$/; // "Soda 306"
-    let titleEndIndex = 0;
-    const maxTitleLines = 3;
-  
-    for (let i = 0; i < Math.min(lines.length, maxTitleLines); i++) {
+
+    // The first line is always part of the title. The title continues until we
+    // hit a line that begins the location.
+    const isRoomNumber = (s: string) => /^\d{1,4}[A-Za-z]?$/.test(s);
+    // A "room line" ends in a room number: "Etcheverry 3109", "Bldg 115", "1210".
+    const isRoomLine = (s: string) =>
+      isRoomNumber(s) || /^[A-Za-z][A-Za-z./ ]*\s+\d{1,4}[A-Za-z]?$/.test(s);
+    // A building-name line: words only, no trailing number ("Anthro/Art Practice").
+    const isBuildingNameLine = (s: string) => /^[A-Za-z][A-Za-z./ ]*$/.test(s);
+    const startsLocation = (i: number): boolean => {
+      if (i === 0) return false; // first line is always title
       const line = lines[i];
-      // Stop if we hit something that looks like a location
-      if (locationPattern.test(line)) {
-        break;
+      // Building + room on one line.
+      if (isRoomLine(line) && !isRoomNumber(line)) return true;
+      // Building-name line immediately followed by a room line (bare number or
+      // "Bldg 115") — e.g. "Anthro/Art Practice" then "Bldg 115".
+      if (isBuildingNameLine(line) && i + 1 < lines.length && isRoomLine(lines[i + 1])) {
+        return true;
       }
-      // Stop if we hit something that's just a number (likely a room number on its own)
-      if (i > 0 && /^\d{3,}$/.test(line)) {
-        break;
-      }
-      titleEndIndex = i + 1;
+      return false;
+    };
+
+    let titleEndIndex = 1;
+    const maxTitleLines = 3;
+    while (titleEndIndex < Math.min(lines.length, maxTitleLines) && !startsLocation(titleEndIndex)) {
+      titleEndIndex++;
     }
-  
-    // Get title from lines up to titleEndIndex
-    const titleParts = lines.slice(0, titleEndIndex);
-    let title =
-      titleParts.length > 0
-        ? titleParts.join(' ')
-            .replace(/\s+-\s+|\s+-|-\s+/g, '-')
-            .replace(/\s+/g, ' ')
-            .trim()
-        : lines[0] || 'Untitled';
-  
-    title = title.replace(/\s+/g, ' ').trim();
+
+    const title = lines
+      .slice(0, titleEndIndex)
+      .join(' ')
+      .replace(/\s+-\s+|\s+-|-\s+/g, '-')
+      .replace(/\s+/g, ' ')
+      .trim();
     if (title.length < 1) return null;
-  
-    // Location
+
+    // Location: consume the location line, plus a trailing room line when the
+    // building name stood on its own line ("Anthro/Art Practice" + "Bldg 115").
     let location = '';
     let instructorStartIndex = titleEndIndex;
-    for (let i = titleEndIndex; i < lines.length; i++) {
-      if (locationPattern.test(lines[i])) {
-        location = lines[i];
-        instructorStartIndex = i + 1;
-        break;
-      }
-      if (/^\d{3,}$/.test(lines[i])) {
-        if (i > titleEndIndex && /^[A-Za-z]+$/.test(lines[i - 1])) {
-          location = `${lines[i - 1]} ${lines[i]}`;
-          instructorStartIndex = i + 1;
-          break;
-        }
+    if (titleEndIndex < lines.length) {
+      const first = lines[titleEndIndex];
+      const next = lines[titleEndIndex + 1] ?? '';
+      if (isBuildingNameLine(first) && isRoomLine(next)) {
+        location = `${first} ${next}`;
+        instructorStartIndex = titleEndIndex + 2;
+      } else {
+        location = first;
+        instructorStartIndex = titleEndIndex + 1;
       }
     }
-  
-    if (!location && lines.length > titleEndIndex) {
-      location = lines[titleEndIndex];
-      instructorStartIndex = titleEndIndex + 1;
-    }
-  
+
     const instructors =
       lines.slice(instructorStartIndex).filter((l) => l.length > 0).join(', ').trim() || undefined;
-  
-    console.log({
-      title,
-      topYText,
-      bottomYText,
-      rawStart,
-      rawEndWithPadding,
-      startTime,
-      endTime,
-    });
-  
+
     return {
-      id: `${dayOfWeek}-${startTime}-${Math.random().toString(36).substr(2, 9)}`,
       title,
       location: location && location.length > 0 ? location : '',
-      instructors: instructors && instructors.length > 0 ? instructors : undefined,
-      dayOfWeek,
-      startTime,
-      endTime,
-      enabled: true,
+      instructors,
     };
-  }  
+  }
 
   private timeToMinutes(time: string): number {
     const [hours, minutes] = time.split(':').map(Number);

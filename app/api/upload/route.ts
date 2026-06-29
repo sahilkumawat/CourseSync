@@ -3,6 +3,8 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { OCRService } from '@/lib/ocrService';
 import { ScheduleLayoutService } from '@/lib/scheduleLayout';
+import { detectBlockRegions } from '@/lib/blockDetection';
+import type { ClassBlock } from '@/lib/types';
 
 export async function POST(request: NextRequest) {
   try {
@@ -39,7 +41,22 @@ export async function POST(request: NextRequest) {
     }
 
     const layoutService = new ScheduleLayoutService();
-    const { classBlocks } = layoutService.buildLayout(ocrBoxes);
+
+    // Preferred path: detect the colored class blocks and parse against their
+    // exact bounds. Fall back to text-only clustering if detection comes up
+    // empty (unusual image, detection failure) so uploads never hard-fail.
+    let classBlocks: ClassBlock[];
+    try {
+      const regions = await detectBlockRegions(buffer);
+      classBlocks = layoutService.buildLayoutFromRegions(ocrBoxes, regions).classBlocks;
+    } catch (err) {
+      console.error('Block detection failed, falling back to text clustering:', err);
+      classBlocks = [];
+    }
+
+    if (!classBlocks || classBlocks.length === 0) {
+      classBlocks = layoutService.buildLayout(ocrBoxes).classBlocks;
+    }
 
     if (classBlocks.length === 0) {
       return NextResponse.json(
