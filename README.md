@@ -1,6 +1,12 @@
 # CourseSync
 
-CourseSync is a Next.js application that allows Berkeley students to upload a screenshot of their weekly class schedule and automatically sync it to Google Calendar as recurring events. The production site is available at `https://coursesyncer.com`.
+<img width="1728" height="991" alt="Screenshot 2026-06-29 at 5 52 37 PM" src="https://github.com/user-attachments/assets/43b56b0f-590f-4eb5-9702-282337326551" />
+
+<img width="1728" height="993" alt="Screenshot 2026-06-29 at 5 56 21 PM" src="https://github.com/user-attachments/assets/f01883eb-76b4-43ac-b6f4-848733aae3d3" />
+
+
+
+CourseSync is a Next.js application that allows Berkeley students to upload a screenshot of their weekly class schedule and automatically sync it to Google Calendar as recurring events. The production site is available at `https://coursesyncer.com`. (video demo under construction)
 
 ## Features
 
